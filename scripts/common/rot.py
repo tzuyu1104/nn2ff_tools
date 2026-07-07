@@ -340,6 +340,49 @@ def change_angle(
     return out
 
 
+def stretch_bond(
+    atoms: Atoms,
+    adjacency: Adjacency,
+    i: int,
+    j: int,
+    target_dist: float,
+) -> Atoms:
+    """Stretch/compress bond i-j to target_dist by symmetric translation.
+
+    The i-side fragment moves by -offset along the i->j direction.
+    The j-side fragment moves by +offset along the i->j direction.
+    This preserves angles (no rotation) and center of mass.
+
+    Indices are 0-based.
+    """
+    part_i, part_j = split_by_bond(adjacency, i, j)
+
+    pos = atoms.get_positions().copy()
+    cur_dist = float(np.linalg.norm(pos[j] - pos[i]))
+
+    if cur_dist < 1e-14:
+        raise ValueError(
+            f"Bond ({i + 1}, {j + 1}) has near-zero length, cannot stretch."
+        )
+
+    offset = (target_dist - cur_dist) / 2.0
+    direction = (pos[j] - pos[i]) / cur_dist
+
+    # Move i-side by -offset along bond direction
+    if part_i:
+        i_side = sorted(part_i)
+        pos[i_side] -= offset * direction
+
+    # Move j-side by +offset along bond direction
+    if part_j:
+        j_side = sorted(part_j)
+        pos[j_side] += offset * direction
+
+    out = atoms.copy()
+    out.set_positions(pos)
+    return out
+
+
 def write_connectivity_gjf(
     atoms: Atoms,
     adjacency: Adjacency,

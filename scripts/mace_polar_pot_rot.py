@@ -327,6 +327,99 @@ def cmd_scan_angle_potential(args: argparse.Namespace) -> None:
     print(f"Figure written: {fig_out}")
 
 
+def cmd_scan_bond_potential(args: argparse.Namespace) -> None:
+    from mace.calculators import mace_polar
+    import matplotlib.pyplot as plt
+    from ase.io import write as ase_write
+
+    input_path = args.input.expanduser().resolve()
+    model_path = Path(args.model).expanduser().resolve()
+
+    idx = parse_specifier(args.spec)
+    if len(idx) != 2:
+        raise ValueError("--spec must be i-j for scan-bond-potential.")
+
+    atoms0, adjacency = load_structure_with_adjacency(input_path)
+
+    i, j = [v - 1 for v in idx]
+    cur_dist = float(np.linalg.norm(
+        atoms0.get_positions()[j] - atoms0.get_positions()[i]
+    ))
+
+    # Default scan range: symmetric around current bond length, ±0.3 A
+    start = args.start if args.start is not None else cur_dist - 0.3
+    stop = args.stop if args.stop is not None else cur_dist + 0.3
+
+    bond_lengths = np.linspace(start, stop, args.bins)
+
+    calc = mace_polar(
+        model=str(model_path),
+        device=args.device,
+        default_dtype=args.dtype,
+    )
+
+    energies = []
+    realized_list = []
+    snapshots = []
+    for dist in bond_lengths:
+        atoms_stretched = rot.stretch_bond(
+            atoms0,
+            adjacency,
+            i=i,
+            j=j,
+            target_dist=float(dist),
+        )
+        pos = atoms_stretched.get_positions()
+        realized = float(np.linalg.norm(pos[j] - pos[i]))
+        realized_list.append(realized)
+
+        atoms_stretched.info["charge"] = args.charge
+        atoms_stretched.info["spin"] = args.spin
+        atoms_stretched.info["external_field"] = list(args.field)
+        atoms_stretched.calc = calc
+
+        e = atoms_stretched.get_potential_energy()
+        energies.append(float(e))
+        snapshots.append(atoms_stretched)
+
+    energies = np.array(energies, dtype=float)
+
+    csv_out = args.csv_out.expanduser().resolve()
+    fig_out = args.fig_out.expanduser().resolve()
+
+    csv_out.parent.mkdir(parents=True, exist_ok=True)
+    fig_out.parent.mkdir(parents=True, exist_ok=True)
+
+    with csv_out.open("w", encoding="utf-8") as f:
+        f.write("target_bond_length_A,realized_bond_length_A,potential_energy_eV\n")
+        for target, realized, energy in zip(bond_lengths, realized_list, energies):
+            f.write(f"{target:.10f},{realized:.10f},{energy:.12f}\n")
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(bond_lengths, energies, marker="o", ms=3)
+    plt.xlabel("Bond length (A)")
+    plt.ylabel("Potential Energy (eV)")
+    plt.title(f"Rigid-fragment bond scan: {args.spec}")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(fig_out, dpi=180)
+
+    # Write multi-frame PDB snapshots (OVITO-compatible)
+    if args.snapshots_out:
+        snap_path = args.snapshots_out.expanduser().resolve()
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        ase_write(str(snap_path), snapshots, format="proteindatabank")
+        print(f"Snapshots written: {snap_path} ({len(snapshots)} frames)")
+
+    print(f"Input structure: {input_path}")
+    print(f"Bond spec: {args.spec}")
+    print(f"Model: {model_path}")
+    print(f"Device: {args.device}")
+    print(f"Points: {args.bins}")
+    print(f"CSV written: {csv_out}")
+    print(f"Figure written: {fig_out}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fragment-based rotational tools with optional MACE-POLAR potential scans."
@@ -420,6 +513,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan_angle.add_argument("--fig-out", type=Path, required=True, help="Output figure path.")
     p_scan_angle.add_argument("--snapshots-out", type=Path, default=None, help="Output multi-frame PDB path for OVITO visualization (optional).")
     p_scan_angle.set_defaults(func=cmd_scan_angle_potential)
+
+    p_scan_bond = sub.add_parser(
+        "scan-bond-potential",
+        help="Rigid-fragment bond scan with MACE-POLAR potential evaluation.",
+    )
+    p_scan_bond.add_argument("--input", "-i", type=Path, required=True, help="Input structure (.gjf z-matrix or .pdb).")
+    p_scan_bond.add_argument("--spec", "-s", type=str, required=True, help="Bond specifier i-j (1-based).")
+    p_scan_bond.add_argument(
+        "--model",
+        type=str,
+        default="~/workspace/mace_polar_1/MACE-POLAR-1-M.model",
+        help="Path to local MACE-POLAR model file.",
+    )
+    p_scan_bond.add_argument("--device", type=str, default="cuda", help="Device: cuda or cpu.")
+    p_scan_bond.add_argument("--dtype", type=str, default="float64", help="Calculator dtype.")
+    p_scan_bond.add_argument("--charge", type=int, default=0, help="Charge passed to atoms.info.")
+    p_scan_bond.add_argument("--spin", type=int, default=1, help="Spin passed to atoms.info.")
+    p_scan_bond.add_argument("--field", type=float, nargs=3, default=[0.0, 0.0, 0.0], help="External field Ex Ey Ez.")
+    p_scan_bond.add_argument("--start", type=float, default=None, help="Start bond length (A). Default: current-0.3 A.")
+    p_scan_bond.add_argument("--stop", type=float, default=None, help="Stop bond length (A). Default: current+0.3 A.")
+    p_scan_bond.add_argument("--bins", type=int, default=36, help="Number of points in scan.")
+    p_scan_bond.add_argument("--csv-out", type=Path, required=True, help="Output CSV path.")
+    p_scan_bond.add_argument("--fig-out", type=Path, required=True, help="Output figure path.")
+    p_scan_bond.add_argument("--snapshots-out", type=Path, default=None, help="Output multi-frame PDB path for OVITO visualization (optional).")
+    p_scan_bond.set_defaults(func=cmd_scan_bond_potential)
 
     return parser
 
