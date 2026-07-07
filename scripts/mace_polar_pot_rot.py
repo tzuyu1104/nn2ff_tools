@@ -231,6 +231,102 @@ def cmd_scan_dihedral_potential(args: argparse.Namespace) -> None:
     print(f"Figure written: {fig_out}")
 
 
+def cmd_scan_angle_potential(args: argparse.Namespace) -> None:
+    from mace.calculators import mace_polar
+    import matplotlib.pyplot as plt
+    from ase.io import write as ase_write
+
+    input_path = args.input.expanduser().resolve()
+    model_path = Path(args.model).expanduser().resolve()
+
+    idx = parse_specifier(args.spec)
+    if len(idx) != 3:
+        raise ValueError("--spec must be i-j-k for scan-angle-potential.")
+
+    atoms0, adjacency = load_structure_with_adjacency(input_path)
+
+    i, j, k = [v - 1 for v in idx]
+    cur_angle = rot.calc_angle_deg(
+        atoms0.get_positions()[i],
+        atoms0.get_positions()[j],
+        atoms0.get_positions()[k],
+    )
+
+    # Default scan range: symmetric around current angle, ±5°
+    start = args.start if args.start is not None else cur_angle - 5.0
+    stop = args.stop if args.stop is not None else cur_angle + 5.0
+
+    angles = np.linspace(start, stop, args.bins)
+
+    calc = mace_polar(
+        model=str(model_path),
+        device=args.device,
+        default_dtype=args.dtype,
+    )
+
+    energies = []
+    realized_list = []
+    snapshots = []
+    for ang in angles:
+        atoms_rot = rot.change_angle(
+            atoms0,
+            adjacency,
+            i=i,
+            j=j,
+            k=k,
+            target_deg=float(ang),
+        )
+        pos = atoms_rot.get_positions()
+        realized = rot.calc_angle_deg(pos[i], pos[j], pos[k])
+        realized_list.append(realized)
+
+        atoms_rot.info["charge"] = args.charge
+        atoms_rot.info["spin"] = args.spin
+        atoms_rot.info["external_field"] = list(args.field)
+        atoms_rot.calc = calc
+
+        e = atoms_rot.get_potential_energy()
+        energies.append(float(e))
+        snapshots.append(atoms_rot)
+
+    energies = np.array(energies, dtype=float)
+
+    csv_out = args.csv_out.expanduser().resolve()
+    fig_out = args.fig_out.expanduser().resolve()
+
+    csv_out.parent.mkdir(parents=True, exist_ok=True)
+    fig_out.parent.mkdir(parents=True, exist_ok=True)
+
+    with csv_out.open("w", encoding="utf-8") as f:
+        f.write("target_angle_deg,realized_angle_deg,potential_energy_eV\n")
+        for target, realized, energy in zip(angles, realized_list, energies):
+            f.write(f"{target:.10f},{realized:.10f},{energy:.12f}\n")
+
+    plt.figure(figsize=(7, 5))
+    plt.plot(angles, energies, marker="o", ms=3)
+    plt.xlabel("Target angle (deg)")
+    plt.ylabel("Potential Energy (eV)")
+    plt.title(f"Rigid-fragment angle scan: {args.spec}")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(fig_out, dpi=180)
+
+    # Write multi-frame PDB snapshots (OVITO-compatible)
+    if args.snapshots_out:
+        snap_path = args.snapshots_out.expanduser().resolve()
+        snap_path.parent.mkdir(parents=True, exist_ok=True)
+        ase_write(str(snap_path), snapshots, format="proteindatabank")
+        print(f"Snapshots written: {snap_path} ({len(snapshots)} frames)")
+
+    print(f"Input structure: {input_path}")
+    print(f"Angle spec: {args.spec}")
+    print(f"Model: {model_path}")
+    print(f"Device: {args.device}")
+    print(f"Points: {args.bins}")
+    print(f"CSV written: {csv_out}")
+    print(f"Figure written: {fig_out}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fragment-based rotational tools with optional MACE-POLAR potential scans."
@@ -299,6 +395,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--fig-out", type=Path, required=True, help="Output figure path.")
     p_scan.add_argument("--snapshots-out", type=Path, default=None, help="Output multi-frame PDB path for OVITO visualization (optional).")
     p_scan.set_defaults(func=cmd_scan_dihedral_potential)
+
+    p_scan_angle = sub.add_parser(
+        "scan-angle-potential",
+        help="Rigid-fragment angle scan with MACE-POLAR potential evaluation.",
+    )
+    p_scan_angle.add_argument("--input", "-i", type=Path, required=True, help="Input structure (.gjf z-matrix or .pdb).")
+    p_scan_angle.add_argument("--spec", "-s", type=str, required=True, help="Angle specifier i-j-k (1-based).")
+    p_scan_angle.add_argument(
+        "--model",
+        type=str,
+        default="~/workspace/mace_polar_1/MACE-POLAR-1-M.model",
+        help="Path to local MACE-POLAR model file.",
+    )
+    p_scan_angle.add_argument("--device", type=str, default="cuda", help="Device: cuda or cpu.")
+    p_scan_angle.add_argument("--dtype", type=str, default="float64", help="Calculator dtype.")
+    p_scan_angle.add_argument("--charge", type=int, default=0, help="Charge passed to atoms.info.")
+    p_scan_angle.add_argument("--spin", type=int, default=1, help="Spin passed to atoms.info.")
+    p_scan_angle.add_argument("--field", type=float, nargs=3, default=[0.0, 0.0, 0.0], help="External field Ex Ey Ez.")
+    p_scan_angle.add_argument("--start", type=float, default=None, help="Start angle value (deg). Default: current-5°.")
+    p_scan_angle.add_argument("--stop", type=float, default=None, help="Stop angle value (deg). Default: current+5°.")
+    p_scan_angle.add_argument("--bins", type=int, default=36, help="Number of points in scan.")
+    p_scan_angle.add_argument("--csv-out", type=Path, required=True, help="Output CSV path.")
+    p_scan_angle.add_argument("--fig-out", type=Path, required=True, help="Output figure path.")
+    p_scan_angle.add_argument("--snapshots-out", type=Path, default=None, help="Output multi-frame PDB path for OVITO visualization (optional).")
+    p_scan_angle.set_defaults(func=cmd_scan_angle_potential)
 
     return parser
 

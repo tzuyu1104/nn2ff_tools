@@ -278,6 +278,68 @@ def set_dihedral_by_fragment_rotation(
     return out
 
 
+def calc_angle_deg(p_i: np.ndarray, p_j: np.ndarray, p_k: np.ndarray) -> float:
+    """Calculate angle i-j-k in degrees."""
+    v_i = p_i - p_j
+    v_k = p_k - p_j
+    v_i_u = _unit(v_i)
+    v_k_u = _unit(v_k)
+    cos_angle = float(np.clip(np.dot(v_i_u, v_k_u), -1.0, 1.0))
+    return math.degrees(math.acos(cos_angle))
+
+
+def change_angle(
+    atoms: Atoms,
+    adjacency: Adjacency,
+    i: int,
+    j: int,
+    k: int,
+    target_deg: float,
+) -> Atoms:
+    """Change angle i-j-k to target_deg by symmetric fragment rotation.
+
+    Both i-side and k-side fragments rotate around the normal vector
+    of the angle plane (i-j-k), each by half the angle difference
+    (symmetric rotation).
+
+    Indices are 0-based.
+    """
+    part_i, part_center, part_k = split_by_angle(adjacency, i, j, k)
+
+    pos = atoms.get_positions().copy()
+    cur = calc_angle_deg(pos[i], pos[j], pos[k])
+
+    half_diff = (cur - target_deg) / 2.0
+
+    # Normal vector of the angle plane (i-j) x (k-j)
+    v_i = pos[i] - pos[j]
+    v_k = pos[k] - pos[j]
+    normal = np.cross(v_i, v_k)
+    norm_len = np.linalg.norm(normal)
+    if norm_len < 1e-14:
+        raise ValueError(
+            f"Angle i-j-k is collinear (atoms {i+1}-{j+1}-{k+1}), "
+            "cannot compute normal vector for rotation."
+        )
+    normal = normal / norm_len
+
+    # Rotate i-side around normal by +half_diff
+    if part_i:
+        i_side = sorted(part_i)
+        rotated_i = rotate_points_about_axis(pos[i_side], pos[j], pos[j] + normal, half_diff)
+        pos[i_side] = rotated_i
+
+    # Rotate k-side around normal by -half_diff
+    if part_k:
+        k_side = sorted(part_k)
+        rotated_k = rotate_points_about_axis(pos[k_side], pos[j], pos[j] + normal, -half_diff)
+        pos[k_side] = rotated_k
+
+    out = atoms.copy()
+    out.set_positions(pos)
+    return out
+
+
 def write_connectivity_gjf(
     atoms: Atoms,
     adjacency: Adjacency,
