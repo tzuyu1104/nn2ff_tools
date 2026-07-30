@@ -7,18 +7,6 @@ rot_fragment_lib will continue to work.
 
 from __future__ import annotations
 
-import sys
-
-
-def _import_fix():
-    """Fix sys.path and sys.modules for scripts/common imports."""
-    if "scripts" in sys.modules:
-        del sys.modules["scripts"]
-    from pathlib import Path
-    _p = Path(__file__).resolve().parent.parent
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
-
 
 try:
     from .common.rot import (  # noqa: F401
@@ -55,7 +43,20 @@ try:
     from .common import rot  # noqa: F401
     from .common import zmat  # noqa: F401
 except ImportError:
-    _import_fix()
+    try:
+        from scripts.common.importing import ensure_scripts_importable
+    except ImportError:
+        import sys
+        from pathlib import Path
+
+        _repo_root = Path(__file__).resolve().parent.parent
+        repo_root_str = str(_repo_root)
+        if repo_root_str not in sys.path:
+            sys.path.insert(0, repo_root_str)
+        sys.modules.pop("scripts", None)
+        from scripts.common.importing import ensure_scripts_importable
+
+    ensure_scripts_importable(__file__)
     from scripts.common.rot import (  # noqa: F401
         Adjacency,
         calc_dihedral_deg,

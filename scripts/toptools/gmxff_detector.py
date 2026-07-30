@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,20 +24,22 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from ase.data import atomic_masses, atomic_numbers
 
 try:
-	from scripts.common.rot import load_atoms_and_adjacency
-except ModuleNotFoundError:
-	# Allow running this script directly from the project root or scripts tree.
-	repo_root = Path(__file__).resolve().parents[2]
-	scripts_root = Path(__file__).resolve().parents[1]
-	for root in (repo_root, scripts_root):
-		root_str = str(root)
-		if root_str not in sys.path:
-			sys.path.insert(0, root_str)
-
+	from ..common.rot import load_atoms_and_adjacency
+except ImportError:
 	try:
-		from scripts.common.rot import load_atoms_and_adjacency
-	except ModuleNotFoundError:
-		from common.rot import load_atoms_and_adjacency
+		from scripts.common.importing import ensure_scripts_importable
+	except ImportError:
+		import sys
+
+		repo_root = Path(__file__).resolve().parents[2]
+		repo_root_str = str(repo_root)
+		if repo_root_str not in sys.path:
+			sys.path.insert(0, repo_root_str)
+		sys.modules.pop("scripts", None)
+		from scripts.common.importing import ensure_scripts_importable
+
+	ensure_scripts_importable(__file__)
+	from scripts.common.rot import load_atoms_and_adjacency
 
 Adjacency = Dict[int, Set[int]]
 

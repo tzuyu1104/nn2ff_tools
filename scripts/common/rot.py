@@ -21,36 +21,20 @@ from ase import Atoms
 from ase.data import atomic_numbers, covalent_radii
 from ase.io import read
 
+from .graph import (
+    Adjacency,
+    bridge_bonds,
+    dfs_component as _dfs_component,
+    format_fragment,
+    parse_pdb_conect as _parse_pdb_conect,
+)
 from .zmat import ZRow, parse_gjf_zmatrix, resolve_token, zmat_rows_to_atoms, adjacency_from_zmat_rows  # noqa: F401
 
-Adjacency = Dict[int, Set[int]]
 
 
 def parse_pdb_conect(pdb_path: Path, natoms: int) -> Adjacency:
     """Parse PDB CONECT records into a 0-based undirected adjacency map."""
-    adjacency: Adjacency = {i: set() for i in range(natoms)}
-    with pdb_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.startswith("CONECT"):
-                continue
-            fields = line.split()
-            if len(fields) < 3:
-                continue
-            try:
-                src = int(fields[1]) - 1
-            except ValueError:
-                continue
-            if src < 0 or src >= natoms:
-                continue
-            for token in fields[2:]:
-                try:
-                    dst = int(token) - 1
-                except ValueError:
-                    continue
-                if 0 <= dst < natoms and dst != src:
-                    adjacency[src].add(dst)
-                    adjacency[dst].add(src)
-    return adjacency
+    return _parse_pdb_conect(pdb_path, natoms)
 
 
 def infer_adjacency_from_geometry(atoms: Atoms, scale: float = 1.2) -> Adjacency:
@@ -133,25 +117,12 @@ def dfs_component(
 
     blocked_edges should contain undirected 0-based edges.
     """
-    blocked_edge_set = {tuple(sorted(e)) for e in blocked_edges}
-    blocked_node_set = set(blocked_nodes)
-
-    if start in blocked_node_set:
-        return set()
-
-    comp: Set[int] = set()
-    stack = [start]
-    while stack:
-        node = stack.pop()
-        if node in comp or node in blocked_node_set:
-            continue
-        comp.add(node)
-        for nei in adjacency[node]:
-            if tuple(sorted((node, nei))) in blocked_edge_set:
-                continue
-            if nei not in comp and nei not in blocked_node_set:
-                stack.append(nei)
-    return comp
+    return _dfs_component(
+        adjacency,
+        start,
+        blocked_edges=blocked_edges,
+        blocked_nodes=blocked_nodes,
+    )
 
 
 def split_by_bond(adjacency: Adjacency, i: int, j: int) -> Tuple[Set[int], Set[int]]:
@@ -189,12 +160,6 @@ def split_by_dihedral(adjacency: Adjacency, i: int, j: int, k: int, l: int) -> T
     if k not in adjacency.get(j, set()):
         raise ValueError(f"Central bond ({j + 1}, {k + 1}) not present in adjacency.")
     return split_by_bond(adjacency, j, k)
-
-
-def format_fragment(fragment: Set[int]) -> str:
-    """Format 0-based fragment indices as sorted 1-based list string."""
-    vals = sorted(v + 1 for v in fragment)
-    return "[" + ", ".join(str(v) for v in vals) + "]"
 
 
 def _unit(v: np.ndarray) -> np.ndarray:

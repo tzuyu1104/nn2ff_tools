@@ -15,6 +15,8 @@ import numpy as np
 from ase import Atoms
 from ase.io import read
 
+from .graph import parse_pdb_conect as _parse_pdb_conect
+
 
 @dataclass
 class ZMatrixRow:
@@ -31,35 +33,7 @@ class ZMatrixRow:
 
 def parse_pdb_conect(pdb_path: Path, natoms: int) -> Dict[int, Set[int]]:
     """Parse CONECT records from a PDB file into a symmetric adjacency map."""
-    adjacency: Dict[int, Set[int]] = {i: set() for i in range(natoms)}
-
-    with pdb_path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.startswith("CONECT"):
-                continue
-
-            fields = line.split()
-            if len(fields) < 3:
-                continue
-
-            try:
-                src = int(fields[1]) - 1
-            except ValueError:
-                continue
-
-            if src < 0 or src >= natoms:
-                continue
-
-            for token in fields[2:]:
-                try:
-                    dst = int(token) - 1
-                except ValueError:
-                    continue
-                if 0 <= dst < natoms and dst != src:
-                    adjacency[src].add(dst)
-                    adjacency[dst].add(src)
-
-    return adjacency
+    return _parse_pdb_conect(pdb_path, natoms)
 
 
 def unit_vector(v: np.ndarray) -> np.ndarray:
