@@ -23,23 +23,12 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from ase.data import atomic_masses, atomic_numbers
 
-try:
-	from ..common.rot import load_atoms_and_adjacency
-except ImportError:
-	try:
-		from scripts.common.importing import ensure_scripts_importable
-	except ImportError:
-		import sys
+if __package__ in {None, ""}:
+	import sys
 
-		repo_root = Path(__file__).resolve().parents[2]
-		repo_root_str = str(repo_root)
-		if repo_root_str not in sys.path:
-			sys.path.insert(0, repo_root_str)
-		sys.modules.pop("scripts", None)
-		from scripts.common.importing import ensure_scripts_importable
+	sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-	ensure_scripts_importable(__file__)
-	from scripts.common.rot import load_atoms_and_adjacency
+from scripts.common.rot import load_atoms_and_adjacency
 
 Adjacency = Dict[int, Set[int]]
 

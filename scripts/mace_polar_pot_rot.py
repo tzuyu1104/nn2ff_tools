@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""First-step rotation/fragment preparation utility (no MACE integration).
-
-Provides two subcommands:
-1) write-gjf: write a Cartesian Gaussian input with explicit connectivity.
-2) split: use DFS to split fragments by bond/angle/dihedral specifier.
+"""Fragment preparation and MACE-POLAR potential scan commands.
 
 Specifier format (1-based atom indices):
 - bond: i-j
@@ -21,26 +17,12 @@ import numpy as np
 from ase import Atoms
 from ase.io import write
 
-try:
-    from .common import zmat
-    from .common import rot
-except ImportError:
-    try:
-        from scripts.common.importing import ensure_scripts_importable
-    except ImportError:
-        import sys
-        from pathlib import Path
+if __package__ in {None, ""}:
+    import sys
 
-        _repo_root = Path(__file__).resolve().parent.parent
-        repo_root_str = str(_repo_root)
-        if repo_root_str not in sys.path:
-            sys.path.insert(0, repo_root_str)
-        sys.modules.pop("scripts", None)
-        from scripts.common.importing import ensure_scripts_importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-    ensure_scripts_importable(__file__)
-    from scripts.common import zmat
-    from scripts.common import rot
+from scripts.common import rot, scanning, zmat
 
 
 def load_structure_with_adjacency(input_path: Path) -> tuple[Atoms, dict[int, set[int]]]:
@@ -148,10 +130,6 @@ def cmd_generate_dihedral_series(args: argparse.Namespace) -> None:
 
 
 def cmd_scan_dihedral_potential(args: argparse.Namespace) -> None:
-    from mace.calculators import mace_polar
-    import matplotlib.pyplot as plt
-    from ase.io import write as ase_write
-
     input_path = args.input.expanduser().resolve()
     model_path = Path(args.model).expanduser().resolve()
 
@@ -164,16 +142,9 @@ def cmd_scan_dihedral_potential(args: argparse.Namespace) -> None:
     i, j, k, l = [v - 1 for v in idx]
     angles = np.linspace(args.start, args.stop, args.bins)
 
-    calc = mace_polar(
-        model=str(model_path),
-        device=args.device,
-        default_dtype=args.dtype,
-    )
+    calculator = scanning.create_mace_calculator(model_path, args.device, args.dtype)
 
-    energies = []
-    realized_list = []
-    snapshots = []
-    for ang in angles:
+    def transform(ang: float) -> tuple[Atoms, float]:
         atoms_rot = rot.set_dihedral_by_fragment_rotation(
             atoms0,
             adjacency,
@@ -181,49 +152,37 @@ def cmd_scan_dihedral_potential(args: argparse.Namespace) -> None:
             j=j,
             k=k,
             l=l,
-            target_deg=float(ang),
+            target_deg=ang,
         )
         pos = atoms_rot.get_positions()
         realized = rot.calc_dihedral_deg(pos[i], pos[j], pos[k], pos[l])
-        realized_list.append(realized)
+        return atoms_rot, realized
 
-        atoms_rot.info["charge"] = args.charge
-        atoms_rot.info["spin"] = args.spin
-        atoms_rot.info["external_field"] = list(args.field)
-        atoms_rot.calc = calc
-
-        e = atoms_rot.get_potential_energy()
-        energies.append(float(e))
-        snapshots.append(atoms_rot)
-
-    energies = np.array(energies, dtype=float)
+    result = scanning.evaluate_scan(
+        angles, transform, calculator, charge=args.charge, spin=args.spin, field=args.field
+    )
 
     csv_out = args.csv_out.expanduser().resolve()
     fig_out = args.fig_out.expanduser().resolve()
 
-    csv_out.parent.mkdir(parents=True, exist_ok=True)
-    fig_out.parent.mkdir(parents=True, exist_ok=True)
-
-    with csv_out.open("w", encoding="utf-8") as f:
-        f.write("target_dihedral_deg,realized_dihedral_deg,potential_energy_eV\n")
-        for target, realized, energy in zip(angles, realized_list, energies):
-            f.write(f"{target:.10f},{realized:.10f},{energy:.12f}\n")
-
-    plt.figure(figsize=(7, 5))
-    plt.plot(angles, energies, marker="o", ms=3)
-    plt.xlabel("Target dihedral (deg)")
-    plt.ylabel("Potential Energy (eV)")
-    plt.title(f"Rigid-fragment dihedral scan: {args.spec}")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(fig_out, dpi=180)
+    scanning.write_scan_csv(
+        csv_out,
+        result,
+        target_column="target_dihedral_deg",
+        realized_column="realized_dihedral_deg",
+    )
+    scanning.write_scan_plot(
+        fig_out,
+        result,
+        xlabel="Target dihedral (deg)",
+        title=f"Rigid-fragment dihedral scan: {args.spec}",
+    )
 
     # Write multi-frame PDB snapshots (OVITO-compatible)
     if args.snapshots_out:
         snap_path = args.snapshots_out.expanduser().resolve()
-        snap_path.parent.mkdir(parents=True, exist_ok=True)
-        ase_write(str(snap_path), snapshots, format="proteindatabank")
-        print(f"Snapshots written: {snap_path} ({len(snapshots)} frames)")
+        scanning.write_snapshots(snap_path, result)
+        print(f"Snapshots written: {snap_path} ({len(result.snapshots)} frames)")
 
     print(f"Input structure: {input_path}")
     print(f"Dihedral spec: {args.spec}")
@@ -235,10 +194,6 @@ def cmd_scan_dihedral_potential(args: argparse.Namespace) -> None:
 
 
 def cmd_scan_angle_potential(args: argparse.Namespace) -> None:
-    from mace.calculators import mace_polar
-    import matplotlib.pyplot as plt
-    from ase.io import write as ase_write
-
     input_path = args.input.expanduser().resolve()
     model_path = Path(args.model).expanduser().resolve()
 
@@ -261,65 +216,46 @@ def cmd_scan_angle_potential(args: argparse.Namespace) -> None:
 
     angles = np.linspace(start, stop, args.bins)
 
-    calc = mace_polar(
-        model=str(model_path),
-        device=args.device,
-        default_dtype=args.dtype,
-    )
+    calculator = scanning.create_mace_calculator(model_path, args.device, args.dtype)
 
-    energies = []
-    realized_list = []
-    snapshots = []
-    for ang in angles:
+    def transform(ang: float) -> tuple[Atoms, float]:
         atoms_rot = rot.change_angle(
             atoms0,
             adjacency,
             i=i,
             j=j,
             k=k,
-            target_deg=float(ang),
+            target_deg=ang,
         )
         pos = atoms_rot.get_positions()
         realized = rot.calc_angle_deg(pos[i], pos[j], pos[k])
-        realized_list.append(realized)
+        return atoms_rot, realized
 
-        atoms_rot.info["charge"] = args.charge
-        atoms_rot.info["spin"] = args.spin
-        atoms_rot.info["external_field"] = list(args.field)
-        atoms_rot.calc = calc
-
-        e = atoms_rot.get_potential_energy()
-        energies.append(float(e))
-        snapshots.append(atoms_rot)
-
-    energies = np.array(energies, dtype=float)
+    result = scanning.evaluate_scan(
+        angles, transform, calculator, charge=args.charge, spin=args.spin, field=args.field
+    )
 
     csv_out = args.csv_out.expanduser().resolve()
     fig_out = args.fig_out.expanduser().resolve()
 
-    csv_out.parent.mkdir(parents=True, exist_ok=True)
-    fig_out.parent.mkdir(parents=True, exist_ok=True)
-
-    with csv_out.open("w", encoding="utf-8") as f:
-        f.write("target_angle_deg,realized_angle_deg,potential_energy_eV\n")
-        for target, realized, energy in zip(angles, realized_list, energies):
-            f.write(f"{target:.10f},{realized:.10f},{energy:.12f}\n")
-
-    plt.figure(figsize=(7, 5))
-    plt.plot(angles, energies, marker="o", ms=3)
-    plt.xlabel("Target angle (deg)")
-    plt.ylabel("Potential Energy (eV)")
-    plt.title(f"Rigid-fragment angle scan: {args.spec}")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(fig_out, dpi=180)
+    scanning.write_scan_csv(
+        csv_out,
+        result,
+        target_column="target_angle_deg",
+        realized_column="realized_angle_deg",
+    )
+    scanning.write_scan_plot(
+        fig_out,
+        result,
+        xlabel="Target angle (deg)",
+        title=f"Rigid-fragment angle scan: {args.spec}",
+    )
 
     # Write multi-frame PDB snapshots (OVITO-compatible)
     if args.snapshots_out:
         snap_path = args.snapshots_out.expanduser().resolve()
-        snap_path.parent.mkdir(parents=True, exist_ok=True)
-        ase_write(str(snap_path), snapshots, format="proteindatabank")
-        print(f"Snapshots written: {snap_path} ({len(snapshots)} frames)")
+        scanning.write_snapshots(snap_path, result)
+        print(f"Snapshots written: {snap_path} ({len(result.snapshots)} frames)")
 
     print(f"Input structure: {input_path}")
     print(f"Angle spec: {args.spec}")
@@ -331,10 +267,6 @@ def cmd_scan_angle_potential(args: argparse.Namespace) -> None:
 
 
 def cmd_scan_bond_potential(args: argparse.Namespace) -> None:
-    from mace.calculators import mace_polar
-    import matplotlib.pyplot as plt
-    from ase.io import write as ase_write
-
     input_path = args.input.expanduser().resolve()
     model_path = Path(args.model).expanduser().resolve()
 
@@ -345,9 +277,7 @@ def cmd_scan_bond_potential(args: argparse.Namespace) -> None:
     atoms0, adjacency = load_structure_with_adjacency(input_path)
 
     i, j = [v - 1 for v in idx]
-    cur_dist = float(np.linalg.norm(
-        atoms0.get_positions()[j] - atoms0.get_positions()[i]
-    ))
+    cur_dist = float(np.linalg.norm(atoms0.get_positions()[j] - atoms0.get_positions()[i]))
 
     # Default scan range: symmetric around current bond length, ±0.3 A
     start = args.start if args.start is not None else cur_dist - 0.3
@@ -355,64 +285,45 @@ def cmd_scan_bond_potential(args: argparse.Namespace) -> None:
 
     bond_lengths = np.linspace(start, stop, args.bins)
 
-    calc = mace_polar(
-        model=str(model_path),
-        device=args.device,
-        default_dtype=args.dtype,
-    )
+    calculator = scanning.create_mace_calculator(model_path, args.device, args.dtype)
 
-    energies = []
-    realized_list = []
-    snapshots = []
-    for dist in bond_lengths:
+    def transform(dist: float) -> tuple[Atoms, float]:
         atoms_stretched = rot.stretch_bond(
             atoms0,
             adjacency,
             i=i,
             j=j,
-            target_dist=float(dist),
+            target_dist=dist,
         )
         pos = atoms_stretched.get_positions()
         realized = float(np.linalg.norm(pos[j] - pos[i]))
-        realized_list.append(realized)
+        return atoms_stretched, realized
 
-        atoms_stretched.info["charge"] = args.charge
-        atoms_stretched.info["spin"] = args.spin
-        atoms_stretched.info["external_field"] = list(args.field)
-        atoms_stretched.calc = calc
-
-        e = atoms_stretched.get_potential_energy()
-        energies.append(float(e))
-        snapshots.append(atoms_stretched)
-
-    energies = np.array(energies, dtype=float)
+    result = scanning.evaluate_scan(
+        bond_lengths, transform, calculator, charge=args.charge, spin=args.spin, field=args.field
+    )
 
     csv_out = args.csv_out.expanduser().resolve()
     fig_out = args.fig_out.expanduser().resolve()
 
-    csv_out.parent.mkdir(parents=True, exist_ok=True)
-    fig_out.parent.mkdir(parents=True, exist_ok=True)
-
-    with csv_out.open("w", encoding="utf-8") as f:
-        f.write("target_bond_length_A,realized_bond_length_A,potential_energy_eV\n")
-        for target, realized, energy in zip(bond_lengths, realized_list, energies):
-            f.write(f"{target:.10f},{realized:.10f},{energy:.12f}\n")
-
-    plt.figure(figsize=(7, 5))
-    plt.plot(bond_lengths, energies, marker="o", ms=3)
-    plt.xlabel("Bond length (A)")
-    plt.ylabel("Potential Energy (eV)")
-    plt.title(f"Rigid-fragment bond scan: {args.spec}")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(fig_out, dpi=180)
+    scanning.write_scan_csv(
+        csv_out,
+        result,
+        target_column="target_bond_length_A",
+        realized_column="realized_bond_length_A",
+    )
+    scanning.write_scan_plot(
+        fig_out,
+        result,
+        xlabel="Bond length (A)",
+        title=f"Rigid-fragment bond scan: {args.spec}",
+    )
 
     # Write multi-frame PDB snapshots (OVITO-compatible)
     if args.snapshots_out:
         snap_path = args.snapshots_out.expanduser().resolve()
-        snap_path.parent.mkdir(parents=True, exist_ok=True)
-        ase_write(str(snap_path), snapshots, format="proteindatabank")
-        print(f"Snapshots written: {snap_path} ({len(snapshots)} frames)")
+        scanning.write_snapshots(snap_path, result)
+        print(f"Snapshots written: {snap_path} ({len(result.snapshots)} frames)")
 
     print(f"Input structure: {input_path}")
     print(f"Bond spec: {args.spec}")

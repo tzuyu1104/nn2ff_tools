@@ -1,3 +1,7 @@
-from . import zmat, rot, pdb2zmat
+"""Implementation modules used by the nn2ff command-line tools.
 
-__all__ = ["zmat", "rot", "pdb2zmat"]
+Submodules are intentionally not imported here.  Keeping package import cheap
+avoids loading every scientific dependency when only one utility is needed.
+"""
+
+__all__: list[str] = []

@@ -18,7 +18,13 @@ from typing import Any, Dict
 
 import numpy as np
 from ase.io import read
-from mace.calculators import mace_polar
+
+if __package__ in {None, ""}:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.common.scanning import create_mace_calculator
 
 
 def to_serializable(value: Any) -> Any:
@@ -60,11 +66,7 @@ def main() -> None:
 
     atoms = read(str(input_path))
 
-    calc = mace_polar(
-        model=str(model_path),
-        device=args.device,
-        default_dtype=args.dtype,
-    )
+    calc = create_mace_calculator(model_path, args.device, args.dtype)
 
     atoms.info["charge"] = args.charge
     atoms.info["spin"] = args.spin

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -135,3 +137,104 @@ def format_fragment(fragment: Set[int]) -> str:
     """Format 0-based atom indices as a 1-based sorted list string."""
     vals = sorted(v + 1 for v in fragment)
     return "[" + ", ".join(str(v) for v in vals) + "]"
+
+
+def normalize_atom_label(label: str) -> str:
+    """Normalize atom labels by removing stereo/charge decorations and case."""
+    if label is None:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "", str(label)).upper()
+    return cleaned
+
+
+def _build_adjacency(atom_types: List[str], bonds: object) -> Adjacency:
+    """Build a symmetric adjacency map from atom labels and bond data."""
+    n = len(atom_types)
+    adjacency: Adjacency = {i: set() for i in range(n)}
+
+    if isinstance(bonds, dict):
+        for src, neighbors in bonds.items():
+            src_idx = int(src)
+            if 0 <= src_idx < n:
+                adjacency[src_idx] = {
+                    int(dst) for dst in neighbors if 0 <= int(dst) < n and int(dst) != src_idx
+                }
+        return adjacency
+
+    for edge in bonds:
+        if len(edge) != 2:
+            continue
+        u, v = edge
+        u = int(u)
+        v = int(v)
+        if 0 <= u < n and 0 <= v < n and u != v:
+            adjacency[u].add(v)
+            adjacency[v].add(u)
+
+    return adjacency
+
+
+def _graph_signature(adjacency: Adjacency) -> Tuple[object, ...]:
+    """Create a deterministic, order-invariant graph signature for the unlabeled bond graph."""
+    colors = [len(adjacency[i]) for i in range(len(adjacency))]
+    for _ in range(min(4, len(adjacency))):
+        signatures = []
+        for index in range(len(adjacency)):
+            neighbor_colors = tuple(sorted(colors[j] for j in adjacency[index]))
+            signatures.append((colors[index], neighbor_colors))
+        unique_signatures = sorted(set(signatures))
+        color_map = {signature: idx for idx, signature in enumerate(unique_signatures)}
+        colors = [color_map[signature] for signature in signatures]
+    return tuple(sorted(colors))
+
+
+def same_topology(
+    atom_types_a: List[str],
+    bonds_a: object,
+    atom_types_b: List[str],
+    bonds_b: object,
+) -> bool:
+    """Return True when two structures share the same atom-type multiset and bond topology."""
+    labels_a = [normalize_atom_label(x) for x in atom_types_a]
+    labels_b = [normalize_atom_label(x) for x in atom_types_b]
+
+    if len(labels_a) != len(labels_b):
+        return False
+
+    if Counter(labels_a) != Counter(labels_b):
+        return False
+
+    adjacency_a = _build_adjacency(labels_a, bonds_a)
+    adjacency_b = _build_adjacency(labels_b, bonds_b)
+
+    if sum(len(neighbors) for neighbors in adjacency_a.values()) != sum(
+        len(neighbors) for neighbors in adjacency_b.values()
+    ):
+        return False
+
+    if sorted(len(neighbors) for neighbors in adjacency_a.values()) != sorted(
+        len(neighbors) for neighbors in adjacency_b.values()
+    ):
+        return False
+
+    return _graph_signature(adjacency_a) == _graph_signature(adjacency_b)
+
+
+def parse_pdb_atoms(pdb_path: Path) -> List[str]:
+    """Parse ATOM/HETATM records and return element-like labels in order."""
+    atom_types: List[str] = []
+    with pdb_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                continue
+
+            element = line[76:78].strip()
+            if not element:
+                atom_name = line[12:16].strip()
+                if atom_name:
+                    element = atom_name[0]
+
+            if element:
+                atom_types.append(element)
+
+    return atom_types

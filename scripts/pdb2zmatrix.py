@@ -12,24 +12,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-try:
-    from .common import pdb2zmat
-except ImportError:
-    try:
-        from scripts.common.importing import ensure_scripts_importable
-    except ImportError:
-        import sys
-        from pathlib import Path
+if __package__ in {None, ""}:
+    import sys
 
-        _repo_root = Path(__file__).resolve().parent.parent
-        repo_root_str = str(_repo_root)
-        if repo_root_str not in sys.path:
-            sys.path.insert(0, repo_root_str)
-        sys.modules.pop("scripts", None)
-        from scripts.common.importing import ensure_scripts_importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-    ensure_scripts_importable(__file__)
-    from scripts.common import pdb2zmat
+from scripts.common import pdb2zmat
 
 
 def parse_args() -> argparse.Namespace:

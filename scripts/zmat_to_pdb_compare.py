@@ -18,24 +18,12 @@ import numpy as np
 from ase import Atoms
 from ase.io import read, write
 
-try:
-    from .common import zmat
-except ImportError:
-    try:
-        from scripts.common.importing import ensure_scripts_importable
-    except ImportError:
-        import sys
-        from pathlib import Path
+if __package__ in {None, ""}:
+    import sys
 
-        _repo_root = Path(__file__).resolve().parent.parent
-        repo_root_str = str(_repo_root)
-        if repo_root_str not in sys.path:
-            sys.path.insert(0, repo_root_str)
-        sys.modules.pop("scripts", None)
-        from scripts.common.importing import ensure_scripts_importable
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-    ensure_scripts_importable(__file__)
-    from scripts.common import zmat
+from scripts.common import zmat
 
 
 def kabsch_align(mobile: np.ndarray, target: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:

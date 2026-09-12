@@ -7,41 +7,16 @@ Reuses shared logic from scripts.common.
 from __future__ import annotations
 
 import argparse
-import math
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 import numpy as np
-from ase import Atoms
 
-try:
-    import matplotlib.pyplot as plt
-except Exception as exc:
-    raise RuntimeError(
-        "matplotlib is required. Install in your venv with:\n"
-        "pip install matplotlib"
-    ) from exc
+if __package__ in {None, ""}:
+    import sys
 
-try:
-    from .common import zmat
-    from .common import rot
-except ImportError:
-    try:
-        from scripts.common.importing import ensure_scripts_importable
-    except ImportError:
-        import sys
-        from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-        _repo_root = Path(__file__).resolve().parent.parent
-        repo_root_str = str(_repo_root)
-        if repo_root_str not in sys.path:
-            sys.path.insert(0, repo_root_str)
-        sys.modules.pop("scripts", None)
-        from scripts.common.importing import ensure_scripts_importable
-
-    ensure_scripts_importable(__file__)
-    from scripts.common import zmat
-    from scripts.common import rot
+from scripts.common import rot, scanning, zmat
 
 
 def main() -> None:
@@ -110,46 +85,35 @@ def main() -> None:
     csv_out = args.csv_out.expanduser().resolve() if args.csv_out else input_path.with_name(stem + ".csv")
     fig_out = args.fig_out.expanduser().resolve() if args.fig_out else input_path.with_name(stem + ".png")
 
-    from mace.calculators import mace_polar
+    calculator = scanning.create_mace_calculator(model_path, args.device, args.dtype)
 
-    calc = mace_polar(
-        model=str(model_path),
-        device=args.device,
-        default_dtype=args.dtype,
-    )
-
-    energies = []
-    for v in values:
+    def transform(value: float):
         local_vars = dict(variables)
-        local_vars[param] = float(v)
+        local_vars[param] = value
 
         atoms = zmat.zmat_to_atoms(rows, local_vars)
-        atoms.info["charge"] = charge
-        atoms.info["spin"] = args.spin
-        atoms.info["external_field"] = list(args.field)
-        atoms.calc = calc
+        return atoms, value
 
-        e = atoms.get_potential_energy()
-        energies.append(float(e))
-
-    energies = np.array(energies, dtype=float)
-
-    csv_out.parent.mkdir(parents=True, exist_ok=True)
-    with csv_out.open("w", encoding="utf-8") as f:
-        f.write("parameter,value,potential_energy_eV\n")
-        for v, e in zip(values, energies):
-            f.write(f"{param},{v:.10f},{e:.12f}\n")
-
-    plt.figure(figsize=(7, 5))
-    plt.plot(values, energies, marker="o", ms=3)
-    plt.xlabel(param)
-    plt.ylabel("Potential Energy (eV)")
-    plt.title(f"MACE-POLAR scan: {param}")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-
-    fig_out.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(fig_out, dpi=180)
+    result = scanning.evaluate_scan(
+        values,
+        transform,
+        calculator,
+        charge=charge,
+        spin=args.spin,
+        field=args.field,
+    )
+    scanning.write_scan_csv(
+        csv_out,
+        result,
+        target_column="value",
+        parameter=param,
+    )
+    scanning.write_scan_plot(
+        fig_out,
+        result,
+        xlabel=param,
+        title=f"MACE-POLAR scan: {param}",
+    )
 
     print(f"Input GJF: {input_path}")
     print(f"Requested parameter: {args.param}")
